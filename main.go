@@ -1,10 +1,13 @@
 package main
 
 import (
-	"slices"
 	"net/http"
 	"papibiyi/directories/Models"
+	"slices"
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 var directories = []models.Directory {}
@@ -44,6 +47,10 @@ func postDirectory(c *gin.Context) {
 		return
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	newDirectory.ID = uuid.NewString()
+	newDirectory.CreatedAt, newDirectory.UpdatedAt = now, now
 	directories = append(directories, newDirectory)	
 	c.IndentedJSON(http.StatusCreated, newDirectory)
 }
@@ -59,6 +66,8 @@ func updateDirectory(c *gin.Context) {
 
 	for i, a := range directories {
 		if a.ID == id {
+			updatedDirectory.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
 			directories[i] = updatedDirectory
 			c.IndentedJSON(http.StatusOK, updatedDirectory)
 			return
