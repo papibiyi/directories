@@ -66,6 +66,7 @@ func updateDirectory(c *gin.Context) {
 
 	for i, a := range directories {
 		if a.ID == id {
+			updatedDirectory.ID = a.ID
 			updatedDirectory.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 			directories[i] = updatedDirectory
