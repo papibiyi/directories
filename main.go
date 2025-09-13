@@ -25,7 +25,9 @@ func main() {
 		getDirectories(c, app.Db)
 	})
 
-	router.GET("/directories/:id", getDirectoryByID)
+	router.GET("/directories/:id", func (c *gin.Context) {
+		getDirectoryByID(c, app.Db)
+	})
 	
     router.POST("/directories", func(c *gin.Context) {
         postDirectory(c, app.Db)
@@ -49,7 +51,7 @@ func getDirectories(c *gin.Context, db *sql.DB) {
         c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to query directories"})
         return
     }
-
+	
     var result []models.Directory
     for rows.Next() {
         var (
@@ -85,22 +87,68 @@ func getDirectories(c *gin.Context, db *sql.DB) {
         return
     }
 
-    // defer rows.Close()
-
     c.IndentedJSON(http.StatusOK, result)
 }
 
 
-func getDirectoryByID(c *gin.Context) {
+func getDirectoryByID(c *gin.Context, db *sql.DB) {
 	id := c.Param("id")
 
-	for _, a := range directories {
-		if a.ID == id {
-			c.IndentedJSON(http.StatusOK, a)
-			return
-		}
+    rows, err := db.Query(`
+        SELECT d.id, d.name, d.phone_number, d.created_at, d.updated_at,
+               a.address_line_1, a.address_line_2, a.city, a.state, a.country
+        FROM directory d
+        LEFT JOIN address a ON a.directory_id = d.id
+        WHERE d.id = ?
+	`, id)
+    if err != nil {
+        log.Printf("error querying directories: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to query directory"})
+        return
+    }
+
+	if !rows.Next() {
+		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "directory not found"})
+		return
 	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "directory not found"})
+
+    var directory models.Directory
+    for rows.Next() {
+        var (
+            id int64
+            name, phone, createdAt, updatedAt sql.NullString
+            addr1, addr2, city, state, country sql.NullString
+        )
+        if err := rows.Scan(&id, &name, &phone, &createdAt, &updatedAt, &addr1, &addr2, &city, &state, &country); err != nil {
+            log.Printf("error scanning row: %v", err)
+            c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to read directory"})
+            return
+        }
+        d := models.Directory{
+            ID:          strconv.FormatInt(id, 10),
+            Name:        name.String,
+            PhoneNumber: phone.String,
+            Address: models.Address{
+                AddressLine1: addr1.String,
+                AddressLine2: addr2.String,
+                City:         city.String,
+                State:        state.String,
+                Country:      country.String,
+            },
+            CreatedAt:   createdAt.String,
+            UpdatedAt:   updatedAt.String,
+        }
+        directory = d
+        break
+    }
+
+    if err := rows.Err(); err != nil {
+        log.Printf("row iteration error: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to read directory"})
+        return
+    }
+
+    c.IndentedJSON(http.StatusOK, directory)
 }
 
 func postDirectory(c *gin.Context, db *sql.DB) {
