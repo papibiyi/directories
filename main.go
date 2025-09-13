@@ -13,6 +13,9 @@ import (
 var directories = []models.Directory {}
 
 func main() {
+	app := &models.App{}
+    app.InitializeDB()
+
 	router := gin.Default()
 	router.GET("/directories", getDirectories)
 	router.GET("/directories/:id", getDirectoryByID)
