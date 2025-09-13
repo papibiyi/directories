@@ -1,13 +1,16 @@
 package main
 
 import (
-	"net/http"
-	"papibiyi/directories/Models"
-	"slices"
-	"time"
+    "database/sql"
+    "log"
+    "net/http"
+    "papibiyi/directories/Models"
+    "slices"
+    "strconv"
+    "time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+    _ "github.com/mattn/go-sqlite3"
+    "github.com/gin-gonic/gin"
 )
 
 var directories = []models.Directory {}
@@ -17,17 +20,74 @@ func main() {
     app.InitializeDB()
 
 	router := gin.Default()
-	router.GET("/directories", getDirectories)
+
+	router.GET("/directories", func(c *gin.Context) {
+		getDirectories(c, app.Db)
+	})
+
 	router.GET("/directories/:id", getDirectoryByID)
-	router.POST("/directories", postDirectory)
+	
+    router.POST("/directories", func(c *gin.Context) {
+        postDirectory(c, app.Db)
+    })
+
 	router.PUT("/directories/:id", updateDirectory)
 	router.DELETE("/directories/:id", deleteDirectory)
 
 	router.Run("localhost:8080")
 }
 
-func getDirectories(c *gin.Context) {
-	c.IndentedJSON(http.StatusOK, directories)
+func getDirectories(c *gin.Context, db *sql.DB) {
+    rows, err := db.Query(`
+        SELECT d.id, d.name, d.phone_number, d.created_at, d.updated_at,
+               a.address_line_1, a.address_line_2, a.city, a.state, a.country
+        FROM directory d
+        LEFT JOIN address a ON a.directory_id = d.id
+        ORDER BY d.id`)
+    if err != nil {
+        log.Printf("error querying directories: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to query directories"})
+        return
+    }
+
+    var result []models.Directory
+    for rows.Next() {
+        var (
+            id int64
+            name, phone, createdAt, updatedAt sql.NullString
+            addr1, addr2, city, state, country sql.NullString
+        )
+        if err := rows.Scan(&id, &name, &phone, &createdAt, &updatedAt, &addr1, &addr2, &city, &state, &country); err != nil {
+            log.Printf("error scanning row: %v", err)
+            c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to read directory"})
+            return
+        }
+        d := models.Directory{
+            ID:          strconv.FormatInt(id, 10),
+            Name:        name.String,
+            PhoneNumber: phone.String,
+            Address: models.Address{
+                AddressLine1: addr1.String,
+                AddressLine2: addr2.String,
+                City:         city.String,
+                State:        state.String,
+                Country:      country.String,
+            },
+            CreatedAt:   createdAt.String,
+            UpdatedAt:   updatedAt.String,
+        }
+        result = append(result, d)
+    }
+
+    if err := rows.Err(); err != nil {
+        log.Printf("row iteration error: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to read directories"})
+        return
+    }
+
+    // defer rows.Close()
+
+    c.IndentedJSON(http.StatusOK, result)
 }
 
 
@@ -43,19 +103,71 @@ func getDirectoryByID(c *gin.Context) {
 	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "directory not found"})
 }
 
-func postDirectory(c *gin.Context) {
-	var newDirectory models.Directory
+func postDirectory(c *gin.Context, db *sql.DB) {
+    var newDirectory models.Directory
 
-	if err := c.BindJSON(&newDirectory); err != nil {
-		return
-	}
+    if err := c.BindJSON(&newDirectory); err != nil {
+        c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+        return
+    }
 
-	now := time.Now().UTC().Format(time.RFC3339)
+    tx, err := db.Begin()
+    if err != nil {
+        log.Printf("error starting tx: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to start transaction"})
+        return
+    }
 
-	newDirectory.ID = uuid.NewString()
-	newDirectory.CreatedAt, newDirectory.UpdatedAt = now, now
-	directories = append(directories, newDirectory)	
-	c.IndentedJSON(http.StatusCreated, newDirectory)
+    now := time.Now().UTC().Format(time.RFC3339)
+
+    res, err := tx.Exec(
+        `INSERT INTO directory (name, phone_number, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+        newDirectory.Name, newDirectory.PhoneNumber, now, now,
+    )
+    if err != nil {
+        _ = tx.Rollback()
+        log.Printf("error inserting directory: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create directory"})
+        return
+    }
+    dirID, err := res.LastInsertId()
+    if err != nil {
+        _ = tx.Rollback()
+        log.Printf("error fetching inserted id: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create directory"})
+        return
+    }
+
+    // Insert address only if any field is provided
+    addr := newDirectory.Address
+    if addr.AddressLine1 != "" || addr.AddressLine2 != "" || addr.City != "" || addr.State != "" || addr.Country != "" {
+        if _, err := tx.Exec(
+            `INSERT INTO address (directory_id, address_line_1, address_line_2, city, state, country) VALUES (?, ?, ?, ?, ?, ?)`,
+            dirID, addr.AddressLine1, addr.AddressLine2, addr.City, addr.State, addr.Country,
+        ); err != nil {
+            _ = tx.Rollback()
+            log.Printf("error inserting address: %v", err)
+            c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create address"})
+            return
+        }
+    }
+
+    if err := tx.Commit(); err != nil {
+        log.Printf("error committing tx: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to save directory"})
+        return
+    }
+
+    created := models.Directory{
+        ID:          strconv.FormatInt(dirID, 10),
+        Name:        newDirectory.Name,
+        PhoneNumber: newDirectory.PhoneNumber,
+        Address:     newDirectory.Address,
+        CreatedAt:   now,
+        UpdatedAt:   now,
+    }
+
+    c.IndentedJSON(http.StatusCreated, created)
 }
 
 func updateDirectory(c *gin.Context) {

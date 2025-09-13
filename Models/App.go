@@ -8,7 +8,7 @@ import (
 )
 
 type App struct {
-    db   *sql.DB
+    Db   *sql.DB
     once sync.Once
 }
 
@@ -19,7 +19,7 @@ func (a *App) InitializeDB() {
         if err != nil {
             log.Fatal(err)
         }
-        a.db = db
+        a.Db = db
 
         createTable := `
 		
@@ -43,7 +43,7 @@ func (a *App) InitializeDB() {
 	);
 		
 		`
-        _, err = a.db.Exec(createTable)
+        _, err = a.Db.Exec(createTable)
         if err != nil {
             log.Fatalf("Could not create table: %s\n", err.Error())
         }
