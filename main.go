@@ -5,7 +5,6 @@ import (
     "log"
     "net/http"
     "papibiyi/directories/Models"
-    "slices"
     "strconv"
     "time"
 
@@ -13,7 +12,6 @@ import (
     "github.com/gin-gonic/gin"
 )
 
-var directories = []models.Directory {}
 
 func main() {
 	app := &models.App{}
@@ -33,8 +31,13 @@ func main() {
         postDirectory(c, app.Db)
     })
 
-	router.PUT("/directories/:id", updateDirectory)
-	router.DELETE("/directories/:id", deleteDirectory)
+	router.PUT("/directories/:id", func(c *gin.Context) {
+		updateDirectory(c, app.Db)
+	})
+
+	router.DELETE("/directories/:id", func(ctx *gin.Context) {
+		deleteDirectory(ctx, app.Db)
+	})
 
 	router.Run("localhost:8080")
 }
@@ -108,7 +111,8 @@ func getDirectoryByID(c *gin.Context, db *sql.DB) {
     }
 
 	if !rows.Next() {
-		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "directory not found"})
+		c.IndentedJSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+		rows.Close()
 		return
 	}
 
@@ -218,7 +222,7 @@ func postDirectory(c *gin.Context, db *sql.DB) {
     c.IndentedJSON(http.StatusCreated, created)
 }
 
-func updateDirectory(c *gin.Context) {
+func updateDirectory(c *gin.Context, db *sql.DB) {
 	id := c.Param("id")
 
 	var updatedDirectory models.Directory
@@ -227,33 +231,74 @@ func updateDirectory(c *gin.Context) {
 		return
 	}
 
-	for i, a := range directories {
-		if a.ID == id {
-			updatedDirectory.ID = a.ID
-			updatedDirectory.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	tx, err := db.Begin()
+	if err != nil {
+        log.Printf("error starting tx: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to start transaction"})
+        return
+    }
 
-			directories[i] = updatedDirectory
-			c.IndentedJSON(http.StatusOK, updatedDirectory)
-			return
-		}
-	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "directory not found"})
+    now := time.Now().UTC().Format(time.RFC3339)
+
+    _, err = tx.Exec(
+        `UPDATE directory SET name = ?, phone_number = ?, updated_at = ? WHERE id = ?`,
+        updatedDirectory.Name, updatedDirectory.PhoneNumber, now, id,
+    )
+    if err != nil {
+        _ = tx.Rollback()
+        log.Printf("error updating directory: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to update directory"})
+        return
+    }
+
+    if _, err := tx.Exec(
+        `UPDATE address SET address_line_1 = ?, address_line_2 = ?, city = ?, state = ?, country = ? WHERE directory_id = ?`,
+        updatedDirectory.Address.AddressLine1, updatedDirectory.Address.AddressLine2, updatedDirectory.Address.City, updatedDirectory.Address.State, updatedDirectory.Address.Country, id,
+    ); err != nil {
+        _ = tx.Rollback()
+        log.Printf("error updating address: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to update address"})
+        return
+    }
+
+    if err := tx.Commit(); err != nil {
+        log.Printf("error committing tx: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to save directory"})
+        return
+    }
+
+    updatedDirectory.ID = id
+    updatedDirectory.UpdatedAt = now
+
+    c.IndentedJSON(http.StatusOK, updatedDirectory)
 }
 
-func deleteDirectory(c *gin.Context) {
+func deleteDirectory(c *gin.Context, db *sql.DB) {
 	id := c.Param("id")
 
-	var index int = -1
-	for i, a := range directories {
-		if a.ID == id {
-			index = i
-			break
-		}
-	}
-	if index != -1 {
-		directories = slices.Delete(directories, index, index+1)
-		c.IndentedJSON(http.StatusOK, gin.H{"message": "directory deleted"})
-	} else {
-		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "directory not found"})
-	}
+    tx, err := db.Begin()
+
+    if err != nil {
+        log.Printf("error starting tx: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to start transaction"})
+        return
+    }
+
+    _, err = tx.Exec(`DELETE FROM directory WHERE id = ?`, id)
+
+    if err != nil {
+        _ = tx.Rollback()
+        log.Printf("error deleting directory: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to delete directory"})
+        return
+    }
+
+    if err := tx.Commit(); err != nil {
+        log.Printf("error committing tx: %v", err)
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to delete directory"})
+        return
+    }
+
+    c.IndentedJSON(http.StatusOK, gin.H{"message": "directory deleted"})
+    
 }
